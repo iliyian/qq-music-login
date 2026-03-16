@@ -63,14 +63,31 @@ async def _do_login(page, context, qq: str, password: str) -> dict | None:
     print("  找到登录框")
 
     print("[4/6] 切换到账号密码登录...")
-    switcher = login_frame.locator("#switcher_plogin")
-    if await switcher.count() > 0 and await switcher.is_visible():
-        await switcher.click()
+    # 新版登录页: 底部 "密码登录" 链接
+    pwd_link = login_frame.locator("a:has-text('密码登录')")
+    # 旧版登录页: #switcher_plogin 按钮
+    old_switcher = login_frame.locator("#switcher_plogin")
+    if await pwd_link.count() > 0 and await pwd_link.is_visible():
+        await pwd_link.click()
         await _human_delay(page, 1500, 3000)
+    elif await old_switcher.count() > 0 and await old_switcher.is_visible():
+        await old_switcher.click()
+        await _human_delay(page, 1500, 3000)
+    else:
+        await page.screenshot(path="/tmp/qq_login_debug.png")
+        print("  错误：未找到密码登录切换入口，截图已保存到 /tmp/qq_login_debug.png")
+        return None
 
     print("[5/6] 输入账号密码...")
+    # 账号框: 优先 #u，回退到 input[type="text"]
     u_field = login_frame.locator("#u")
-    await u_field.wait_for(state="visible", timeout=10000)
+    if await u_field.count() == 0:
+        u_field = login_frame.locator("input[type='text']").first
+    try:
+        await u_field.wait_for(state="visible", timeout=10000)
+    except Exception:
+        await _dump_debug(page, login_frame, "账号框未出现")
+        return None
     await u_field.click()
     await _human_delay(page, 300, 600)
     await u_field.type(qq, delay=random.randint(80, 160))
@@ -78,28 +95,23 @@ async def _do_login(page, context, qq: str, password: str) -> dict | None:
 
     # 密码框: 优先 #p，回退到 input[type="password"]
     p_field = login_frame.locator("#p")
-    if await p_field.count() == 0 or not await p_field.is_visible():
+    if await p_field.count() == 0:
         p_field = login_frame.locator("input[type='password']").first
     try:
         await p_field.wait_for(state="visible", timeout=10000)
     except Exception:
-        await page.screenshot(path="/tmp/qq_login_debug.png")
-        print("  错误：密码框未出现，截图已保存到 /tmp/qq_login_debug.png")
-        print("  当前iframe中的input元素:")
-        inputs = login_frame.locator("input")
-        for i in range(await inputs.count()):
-            el = inputs.nth(i)
-            el_id = await el.get_attribute("id") or ""
-            el_type = await el.get_attribute("type") or ""
-            el_name = await el.get_attribute("name") or ""
-            print(f"    <input id='{el_id}' type='{el_type}' name='{el_name}'>")
+        await _dump_debug(page, login_frame, "密码框未出现")
         return None
     await p_field.click()
     await _human_delay(page, 300, 600)
     await p_field.type(password, delay=random.randint(80, 160))
     await _human_delay(page, 1000, 2000)
 
-    await login_frame.locator("#login_button").click()
+    # 登录按钮: 优先 #login_button，回退到文本匹配
+    login_btn = login_frame.locator("#login_button")
+    if await login_btn.count() == 0:
+        login_btn = login_frame.locator("a:has-text('登录'), button:has-text('登录')").first
+    await login_btn.click()
     print("  已提交，等待响应...")
 
     logged_in = await _wait_for_login_result(page, login_frame)
@@ -125,6 +137,27 @@ async def _do_login(page, context, qq: str, password: str) -> dict | None:
     print("\n登录成功!")
     print(f"  uin = {result.get('uin', '?')}")
     return result
+
+
+async def _dump_debug(page, login_frame, reason: str):
+    """截图并打印iframe中的input元素用于调试"""
+    await page.screenshot(path="/tmp/qq_login_debug.png")
+    print(f"  错误：{reason}，截图已保存到 /tmp/qq_login_debug.png")
+    print("  当前iframe中的input元素:")
+    inputs = login_frame.locator("input")
+    for i in range(await inputs.count()):
+        el = inputs.nth(i)
+        el_id = await el.get_attribute("id") or ""
+        el_type = await el.get_attribute("type") or ""
+        el_name = await el.get_attribute("name") or ""
+        print(f"    <input id='{el_id}' type='{el_type}' name='{el_name}'>")
+    print("  当前iframe中的a元素:")
+    links = login_frame.locator("a")
+    for i in range(await links.count()):
+        el = links.nth(i)
+        text = (await el.text_content() or "").strip()
+        if text:
+            print(f"    <a>{text}</a>")
 
 
 async def _human_delay(page, min_ms: int = 1000, max_ms: int = 3000):
