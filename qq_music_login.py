@@ -10,6 +10,7 @@ QQ音乐登录 - 自动获取 qqmusic_key 并更新到 Vercel 项目环境变量
 import asyncio
 import json
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -47,11 +48,11 @@ async def login(qq: str, password: str, headless: bool = False) -> dict | None:
 async def _do_login(page, context, qq: str, password: str) -> dict | None:
     print("[1/6] 打开QQ音乐首页...")
     await page.goto(QQMUSIC_URL, wait_until="domcontentloaded")
-    await page.wait_for_timeout(2000)
+    await _human_delay(page, 3000, 5000)
 
     print("[2/6] 点击登录...")
     await page.locator("a:has-text('登录')").first.click()
-    await page.wait_for_timeout(2000)
+    await _human_delay(page, 3000, 5000)
 
     print("[3/6] 等待登录框...")
     login_frame = await _wait_for_login_frame(page)
@@ -66,11 +67,19 @@ async def _do_login(page, context, qq: str, password: str) -> dict | None:
     switcher = login_frame.locator("#switcher_plogin")
     if await switcher.count() > 0 and await switcher.is_visible():
         await switcher.click()
-        await page.wait_for_timeout(1000)
+        await _human_delay(page, 1500, 3000)
 
     print("[5/6] 输入账号密码...")
-    await login_frame.locator("#u").fill(qq)
-    await login_frame.locator("#p").fill(password)
+    await login_frame.locator("#u").click()
+    await _human_delay(page, 300, 600)
+    await login_frame.locator("#u").type(qq, delay=random.randint(80, 160))
+    await _human_delay(page, 800, 1500)
+
+    await login_frame.locator("#p").click()
+    await _human_delay(page, 300, 600)
+    await login_frame.locator("#p").type(password, delay=random.randint(80, 160))
+    await _human_delay(page, 1000, 2000)
+
     await login_frame.locator("#login_button").click()
     print("  已提交，等待响应...")
 
@@ -103,6 +112,11 @@ async def _do_login(page, context, qq: str, password: str) -> dict | None:
     _save_cookies(cookies)
     print(f"  cookie已保存到: {COOKIE_FILE}")
     return result
+
+
+async def _human_delay(page, min_ms: int = 1000, max_ms: int = 3000):
+    """模拟人类操作间隔"""
+    await page.wait_for_timeout(random.randint(min_ms, max_ms))
 
 
 async def _wait_for_login_frame(page, timeout_s: int = 15):
