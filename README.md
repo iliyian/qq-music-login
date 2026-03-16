@@ -1,5 +1,7 @@
 # qq-music-login
 
+> **⚠️ 注意：** QQ 登录可能会触发手机短信验证，此步骤无法自动化完成。
+
 自动刷新 QQ 音乐 `qqmusic_key`，更新到 Vercel 环境变量并触发重新部署。专为 [meting-api](https://meting-api.iliyian.com) 提供长期 QQ 音乐 VIP 歌曲支持。
 
 ## 为什么需要
@@ -88,19 +90,21 @@ journalctl -u qq-music-login.service -e
 
 | 变量 | 说明 | 获取方式 |
 |------|------|----------|
-| `QQ_UIN` | QQ 号 | 你的 QQ 账号 |
-| `QQ_PASSWORD` | QQ 密码 | 你的 QQ 密码 |
+| `QQ_UIN` | QQ 号（配置 INIT_COOKIE 时可选） | 你的 QQ 账号 |
+| `QQ_PASSWORD` | QQ 密码（配置 INIT_COOKIE 时可选） | 你的 QQ 密码 |
 | `VERCEL_TOKEN` | Vercel API Token | [Vercel Tokens](https://vercel.com/account/tokens) 创建 |
 | `VERCEL_PROJECT_ID` | Vercel 项目 ID | 项目 Settings → General → Project ID |
 
-### 可选（Telegram 通知）
+### 可选
 
 | 变量 | 说明 |
 |------|------|
+| `INIT_COOKIE` | 浏览器中 y.qq.com 的 cookie 字符串，配置后优先使用 cookie 登录跳过验证 |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token |
 | `TELEGRAM_CHAT_ID` | 接收通知的 Chat ID |
-
-不配置 Telegram 变量时，脚本正常运行，只是不发送通知。
+| `QQ_MUSIC_PROXY` | 浏览器访问 QQ 音乐使用的代理 |
+| `TELEGRAM_PROXY` | 发送 Telegram 通知使用的代理 |
+| `VERCEL_PROXY` | 访问 Vercel API 使用的代理 |
 
 ## Telegram 通知配置
 
@@ -117,12 +121,13 @@ journalctl -u qq-music-login.service -e
 
 ## 验证码处理
 
-QQ 登录有时会弹出滑块验证码：
+QQ 登录可能会触发图片验证码和手机短信验证，这些步骤无法自动化完成：
 
+- **图片验证码**：需要选择符合描述的图片，有头模式下可手动操作
+- **手机短信验证**：需要手动接收并输入验证码，无法绕过
 - **有头模式**：在弹出的浏览器窗口中手动完成验证，脚本会等待最多 2 分钟
-- **无头模式**：无法手动操作，频繁触发时建议切换有头模式
-- **服务器部署**：使用 Xvfb 虚拟显示以有头模式运行，但验证码仍需关注。同一 IP 稳定运行后触发频率会降低
-- 同一 IP 首次登录或频繁登录更容易触发验证码
+- **无头模式**：无法手动操作，不推荐
+- **建议**：配置 `INIT_COOKIE` 从已登录的浏览器中复制 cookie，可跳过整个登录验证流程
 
 ## 常见问题
 
