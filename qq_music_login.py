@@ -136,7 +136,14 @@ async def _do_login(page, context, qq: str, password: str) -> dict | None:
     result = {c["name"]: c["value"] for c in cookies if c["name"] in target_keys}
 
     if "qqmusic_key" not in result:
-        print("\n未获取到 qqmusic_key，登录可能失败")
+        await page.screenshot(path="/tmp/qq_login_debug.png")
+        print("\n未获取到 qqmusic_key，截图已保存到 /tmp/qq_login_debug.png")
+        print(f"  当前URL: {page.url}")
+        cookie_names = [c["name"] for c in cookies]
+        print(f"  所有cookie ({len(cookie_names)}): {cookie_names}")
+        matched = {c["name"]: c["value"][:20] + "..." for c in cookies if c["name"] in target_keys}
+        if matched:
+            print(f"  匹配到的目标cookie: {list(matched.keys())}")
         return None
 
     print("\n登录成功!")
