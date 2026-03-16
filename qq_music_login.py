@@ -69,14 +69,34 @@ async def _do_login(page, context, qq: str, password: str) -> dict | None:
         await _human_delay(page, 1500, 3000)
 
     print("[5/6] 输入账号密码...")
-    await login_frame.locator("#u").click()
+    u_field = login_frame.locator("#u")
+    await u_field.wait_for(state="visible", timeout=10000)
+    await u_field.click()
     await _human_delay(page, 300, 600)
-    await login_frame.locator("#u").type(qq, delay=random.randint(80, 160))
+    await u_field.type(qq, delay=random.randint(80, 160))
     await _human_delay(page, 800, 1500)
 
-    await login_frame.locator("#p").click()
+    # 密码框: 优先 #p，回退到 input[type="password"]
+    p_field = login_frame.locator("#p")
+    if await p_field.count() == 0 or not await p_field.is_visible():
+        p_field = login_frame.locator("input[type='password']").first
+    try:
+        await p_field.wait_for(state="visible", timeout=10000)
+    except Exception:
+        await page.screenshot(path="/tmp/qq_login_debug.png")
+        print("  错误：密码框未出现，截图已保存到 /tmp/qq_login_debug.png")
+        print("  当前iframe中的input元素:")
+        inputs = login_frame.locator("input")
+        for i in range(await inputs.count()):
+            el = inputs.nth(i)
+            el_id = await el.get_attribute("id") or ""
+            el_type = await el.get_attribute("type") or ""
+            el_name = await el.get_attribute("name") or ""
+            print(f"    <input id='{el_id}' type='{el_type}' name='{el_name}'>")
+        return None
+    await p_field.click()
     await _human_delay(page, 300, 600)
-    await login_frame.locator("#p").type(password, delay=random.randint(80, 160))
+    await p_field.type(password, delay=random.randint(80, 160))
     await _human_delay(page, 1000, 2000)
 
     await login_frame.locator("#login_button").click()
