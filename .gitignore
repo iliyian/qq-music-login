@@ -1,0 +1,7 @@
+.env
+cookies.json
+c_login_2.js
+
+__pycache__/
+*.pyc
+.venv/

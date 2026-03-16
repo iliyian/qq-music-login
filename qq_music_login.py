@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""
+QQ音乐登录 - 自动获取 qqmusic_key 并更新到 Vercel 项目环境变量
+
+用法:
+    1. 复制 .env.example 为 .env 并填写配置
+    2. python qq_music_login.py [--headless]
+"""
+
+import asyncio
+import json
+import os
+import sys
+from pathlib import Path
+
+import requests as http_requests
+from dotenv import load_dotenv
+from playwright.async_api import async_playwright
+
+QQMUSIC_URL = "https://y.qq.com/"
+COOKIE_FILE = Path(__file__).parent / "cookies.json"
+VERCEL_API = "https://api.vercel.com"
+
+
+# ─── QQ音乐登录 ───────────────────────────────────────────
+
+
+async def login(qq: str, password: str, headless: bool = False) -> dict | None:
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=headless)
+        context = await browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+        )
+        page = await context.new_page()
+        try:
+            result = await _do_login(page, context, qq, password)
+        finally:
+            await browser.close()
+        return result
+
+
+async def _do_login(page, context, qq: str, password: str) -> dict | None:
+    print("[1/6] 打开QQ音乐首页...")
+    await page.goto(QQMUSIC_URL, wait_until="domcontentloaded")
+    await page.wait_for_timeout(2000)
+
+    print("[2/6] 点击登录...")
+    await page.locator("a:has-text('登录')").first.click()
+    await page.wait_for_timeout(2000)
+
+    print("[3/6] 等待登录框...")
+    login_frame = await _wait_for_login_frame(page)
+    if not login_frame:
+        print("错误：未找到登录iframe")
+        for f in page.frames:
+            print(f"  - {f.url[:100]}")
+        return None
+    print("  找到登录框")
+
+    print("[4/6] 切换到账号密码登录...")
+    switcher = login_frame.locator("#switcher_plogin")
+    if await switcher.count() > 0 and await switcher.is_visible():
+        await switcher.click()
+        await page.wait_for_timeout(1000)
+
+    print("[5/6] 输入账号密码...")
+    await login_frame.locator("#u").fill(qq)
+    await login_frame.locator("#p").fill(password)
+    await login_frame.locator("#login_button").click()
+    print("  已提交，等待响应...")
+
+    logged_in = await _wait_for_login_result(page, login_frame)
+    if not logged_in:
+        return None
+
+    print("[6/6] 提取cookie...")
+    cookies = await context.cookies()
+
+    target_keys = {
+        "qqmusic_key", "qm_keyst", "uin",
+        "psrf_qqaccess_token", "psrf_qqopenid",
+        "psrf_qqunionid", "psrf_qqrefresh_token",
+        "psrf_access_token_expiresAt", "tmeLoginType",
+        "euin", "psrf_musickey_createtime",
+    }
+    result = {c["name"]: c["value"] for c in cookies if c["name"] in target_keys}
+
+    if "qqmusic_key" not in result:
+        print("\n未获取到 qqmusic_key，登录可能失败")
+        _print_qq_cookies(cookies)
+        return None
+
+    print("\n登录成功!")
+    print(f"  uin         = {result.get('uin', '?')}")
+    key = result["qqmusic_key"]
+    print(f"  qqmusic_key = {key[:40]}..." if len(key) > 40 else f"  qqmusic_key = {key}")
+
+    _save_cookies(cookies)
+    print(f"  cookie已保存到: {COOKIE_FILE}")
+    return result
+
+
+async def _wait_for_login_frame(page, timeout_s: int = 15):
+    for _ in range(timeout_s * 2):
+        for frame in page.frames:
+            if "ptlogin2" in frame.url:
+                return frame
+        await page.wait_for_timeout(500)
+    return None
+
+
+async def _wait_for_login_result(page, login_frame, timeout_s: int = 10) -> bool:
+    for _ in range(timeout_s * 2):
+        if "y.qq.com" in page.url and "wx_redirect" not in page.url:
+            await page.wait_for_timeout(2000)
+            return True
+
+        err = login_frame.locator("#err_m")
+        if await err.count() > 0 and await err.is_visible():
+            err_text = (await err.text_content() or "").strip()
+            if err_text:
+                print(f"  登录失败: {err_text}")
+                return False
+
+        has_captcha = any(
+            "captcha" in f.url or "tcaptcha" in f.url.lower()
+            for f in page.frames
+        )
+        if has_captcha:
+            print("  检测到验证码，请在浏览器中手动完成验证...")
+            try:
+                await page.wait_for_url("**/y.qq.com/**", timeout=120000)
+                await page.wait_for_timeout(3000)
+                return True
+            except Exception:
+                print("  验证超时")
+                return False
+
+        await page.wait_for_timeout(500)
+
+    try:
+        await page.wait_for_url("**/y.qq.com/**", timeout=5000)
+        await page.wait_for_timeout(3000)
+        return True
+    except Exception:
+        print("  登录超时，未检测到成功跳转")
+        print("  如需手动操作，请在浏览器中完成后按回车...")
+        await asyncio.get_event_loop().run_in_executor(None, input)
+        await page.wait_for_timeout(3000)
+        return "y.qq.com" in page.url
+
+
+def _save_cookies(cookies: list):
+    with open(COOKIE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cookies, f, ensure_ascii=False, indent=2)
+
+
+def _print_qq_cookies(cookies: list):
+    print("  当前qq.com域cookie:")
+    for c in cookies:
+        if c.get("domain") and "qq" in c["domain"]:
+            val = str(c["value"])
+            print(f"    {c['name']} = {val[:60]}{'...' if len(val) > 60 else ''}")
+
+
+# ─── Vercel API ────────────────────────────────────────────
+
+
+def _vercel_headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+def _get_env_vars(token: str, project_id: str) -> list[dict]:
+    """获取项目当前所有环境变量"""
+    resp = http_requests.get(
+        f"{VERCEL_API}/v9/projects/{project_id}/env",
+        headers=_vercel_headers(token),
+    )
+    resp.raise_for_status()
+    return resp.json().get("envs", [])
+
+
+def _upsert_env_var(token: str, project_id: str, key: str, value: str):
+    """创建或更新单个环境变量（覆盖所有target: production/preview/development）"""
+    headers = _vercel_headers(token)
+    envs = _get_env_vars(token, project_id)
+
+    existing = [e for e in envs if e["key"] == key]
+
+    if existing:
+        env_id = existing[0]["id"]
+        resp = http_requests.patch(
+            f"{VERCEL_API}/v9/projects/{project_id}/env/{env_id}",
+            headers=headers,
+            json={
+                "value": value,
+                "target": ["production", "preview", "development"],
+                "type": "encrypted",
+            },
+        )
+    else:
+        resp = http_requests.post(
+            f"{VERCEL_API}/v10/projects/{project_id}/env",
+            headers=headers,
+            json={
+                "key": key,
+                "value": value,
+                "target": ["production", "preview", "development"],
+                "type": "encrypted",
+            },
+        )
+
+    resp.raise_for_status()
+    action = "更新" if existing else "创建"
+    print(f"  {action} {key} 成功")
+
+
+def _trigger_redeploy(token: str, project_id: str):
+    """获取最近一次production部署并触发重新部署"""
+    headers = _vercel_headers(token)
+
+    # 获取最近的 production deployment
+    resp = http_requests.get(
+        f"{VERCEL_API}/v6/deployments",
+        headers=headers,
+        params={"projectId": project_id, "target": "production", "limit": 1},
+    )
+    resp.raise_for_status()
+    deployments = resp.json().get("deployments", [])
+
+    if not deployments:
+        print("  警告：未找到production部署，跳过重新部署")
+        return
+
+    deploy_id = deployments[0]["uid"]
+    name = deployments[0].get("name", "?")
+
+    resp = http_requests.post(
+        f"{VERCEL_API}/v13/deployments",
+        headers=headers,
+        json={
+            "name": name,
+            "deploymentId": deploy_id,
+            "target": "production",
+        },
+    )
+    resp.raise_for_status()
+    new_url = resp.json().get("url", "")
+    print(f"  已触发重新部署: {new_url}")
+
+
+def update_vercel(token: str, project_id: str, uin: str, qqmusic_key: str):
+    """更新Vercel环境变量并触发重新部署"""
+    print("\n[Vercel] 更新环境变量...")
+    _upsert_env_var(token, project_id, "QQ_UID", uin)
+    _upsert_env_var(token, project_id, "QQ_MUSIC_KEY", qqmusic_key)
+
+    print("[Vercel] 触发重新部署...")
+    _trigger_redeploy(token, project_id)
+
+
+# ─── 入口 ──────────────────────────────────────────────────
+
+
+async def main():
+    load_dotenv(Path(__file__).parent / ".env")
+
+    qq = os.getenv("QQ_UIN")
+    password = os.getenv("QQ_PASSWORD")
+    vercel_token = os.getenv("VERCEL_TOKEN")
+    vercel_project_id = os.getenv("VERCEL_PROJECT_ID")
+
+    if not qq or not password:
+        print("错误：请在 .env 中配置 QQ_UIN 和 QQ_PASSWORD")
+        sys.exit(1)
+    if not vercel_token or not vercel_project_id:
+        print("错误：请在 .env 中配置 VERCEL_TOKEN 和 VERCEL_PROJECT_ID")
+        sys.exit(1)
+
+    headless = "--headless" in sys.argv
+
+    # 1. 登录QQ音乐
+    result = await login(qq, password, headless=headless)
+    if not result:
+        sys.exit(1)
+
+    # 2. 更新Vercel
+    uin = result.get("uin", qq)
+    qqmusic_key = result["qqmusic_key"]
+    update_vercel(vercel_token, vercel_project_id, uin, qqmusic_key)
+
+    print("\n全部完成!")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
