@@ -8,7 +8,6 @@ QQ音乐登录 - 自动获取 qqmusic_key 并更新到 Vercel 项目环境变量
 """
 
 import asyncio
-import json
 import os
 import random
 import sys
@@ -19,7 +18,6 @@ from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
 QQMUSIC_URL = "https://y.qq.com/"
-COOKIE_FILE = Path(__file__).parent / "cookies.json"
 VERCEL_API = "https://api.vercel.com"
 TELEGRAM_API = "https://api.telegram.org"
 
@@ -102,16 +100,10 @@ async def _do_login(page, context, qq: str, password: str) -> dict | None:
 
     if "qqmusic_key" not in result:
         print("\n未获取到 qqmusic_key，登录可能失败")
-        _print_qq_cookies(cookies)
         return None
 
     print("\n登录成功!")
-    print(f"  uin         = {result.get('uin', '?')}")
-    key = result["qqmusic_key"]
-    print(f"  qqmusic_key = {key[:40]}..." if len(key) > 40 else f"  qqmusic_key = {key}")
-
-    _save_cookies(cookies)
-    print(f"  cookie已保存到: {COOKIE_FILE}")
+    print(f"  uin = {result.get('uin', '?')}")
     return result
 
 
@@ -170,17 +162,6 @@ async def _wait_for_login_result(page, login_frame, timeout_s: int = 10) -> bool
         return "y.qq.com" in page.url
 
 
-def _save_cookies(cookies: list):
-    with open(COOKIE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cookies, f, ensure_ascii=False, indent=2)
-
-
-def _print_qq_cookies(cookies: list):
-    print("  当前qq.com域cookie:")
-    for c in cookies:
-        if c.get("domain") and "qq" in c["domain"]:
-            val = str(c["value"])
-            print(f"    {c['name']} = {val[:60]}{'...' if len(val) > 60 else ''}")
 
 
 # ─── Vercel API ────────────────────────────────────────────
@@ -345,7 +326,6 @@ async def main():
     notify(
         f"✅ <b>QQ音乐 Key 刷新成功</b>\n\n"
         f"uin: {uin}\n"
-        f"key: {qqmusic_key[:20]}...\n"
         f"Vercel 环境变量已更新并触发重新部署"
     )
 
