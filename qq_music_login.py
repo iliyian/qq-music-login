@@ -21,6 +21,7 @@ from playwright.async_api import async_playwright
 QQMUSIC_URL = "https://y.qq.com/"
 COOKIE_FILE = Path(__file__).parent / "cookies.json"
 VERCEL_API = "https://api.vercel.com"
+TELEGRAM_API = "https://api.telegram.org"
 
 
 # ─── QQ音乐登录 ───────────────────────────────────────────
@@ -271,11 +272,28 @@ def _trigger_redeploy(token: str, project_id: str):
 def update_vercel(token: str, project_id: str, uin: str, qqmusic_key: str):
     """更新Vercel环境变量并触发重新部署"""
     print("\n[Vercel] 更新环境变量...")
-    _upsert_env_var(token, project_id, "QQ_UID", uin)
+    _upsert_env_var(token, project_id, "QQ_UIN", uin)
     _upsert_env_var(token, project_id, "QQ_MUSIC_KEY", qqmusic_key)
 
     print("[Vercel] 触发重新部署...")
     _trigger_redeploy(token, project_id)
+
+
+# ─── Telegram 通知 ────────────────────────────────────────
+
+
+def send_telegram(token: str, chat_id: str, message: str):
+    """发送 Telegram 消息通知"""
+    try:
+        resp = http_requests.post(
+            f"{TELEGRAM_API}/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        print(f"[Telegram] 通知发送成功")
+    except Exception as e:
+        print(f"[Telegram] 通知发送失败: {e}")
 
 
 # ─── 入口 ──────────────────────────────────────────────────
@@ -288,6 +306,8 @@ async def main():
     password = os.getenv("QQ_PASSWORD")
     vercel_token = os.getenv("VERCEL_TOKEN")
     vercel_project_id = os.getenv("VERCEL_PROJECT_ID")
+    tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    tg_chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
     if not qq or not password:
         print("错误：请在 .env 中配置 QQ_UIN 和 QQ_PASSWORD")
@@ -298,15 +318,36 @@ async def main():
 
     headless = "--headless" in sys.argv
 
+    def notify(message: str):
+        if tg_token and tg_chat_id:
+            send_telegram(tg_token, tg_chat_id, message)
+
     # 1. 登录QQ音乐
     result = await login(qq, password, headless=headless)
     if not result:
+        notify("❌ <b>QQ音乐 Key 刷新失败</b>\n\n登录未成功，未获取到 qqmusic_key")
         sys.exit(1)
 
     # 2. 更新Vercel
     uin = result.get("uin", qq)
     qqmusic_key = result["qqmusic_key"]
-    update_vercel(vercel_token, vercel_project_id, uin, qqmusic_key)
+    try:
+        update_vercel(vercel_token, vercel_project_id, uin, qqmusic_key)
+    except Exception as e:
+        notify(
+            f"❌ <b>QQ音乐 Key 刷新失败</b>\n\n"
+            f"登录成功但 Vercel 更新失败\n"
+            f"uin: {uin}\n"
+            f"错误: {e}"
+        )
+        raise
+
+    notify(
+        f"✅ <b>QQ音乐 Key 刷新成功</b>\n\n"
+        f"uin: {uin}\n"
+        f"key: {qqmusic_key[:20]}...\n"
+        f"Vercel 环境变量已更新并触发重新部署"
+    )
 
     print("\n全部完成!")
 

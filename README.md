@@ -1,21 +1,22 @@
 # qq-music-login
 
-通过 Playwright 自动化浏览器登录 QQ 音乐，获取 `qqmusic_key`，并自动更新到 Vercel 项目环境变量触发重新部署。
+自动刷新 QQ 音乐 `qqmusic_key`，更新到 Vercel 环境变量并触发重新部署。专为 [meting-api](https://meting-api.iliyian.com) 提供长期 QQ 音乐 VIP 歌曲支持。
 
-## 原理
+## 为什么需要
 
-1. 使用 Playwright 打开 QQ 音乐网页端（y.qq.com）
-2. 自动点击登录 → 切换到账号密码登录 → 填入 QQ 号和密码 → 提交
-3. 登录成功后从浏览器 cookie 中提取 `qqmusic_key`（即 `QQ_MUSIC_KEY`）和 `uin`（即 `QQ_UID`）
-4. 调用 Vercel API 将 `QQ_UID` 和 `QQ_MUSIC_KEY` 写入指定项目的环境变量
-5. 自动触发该项目的 production 重新部署，使新 key 生效
+QQ 音乐的 `QQ_MUSIC_KEY` 约 3 天自动失效。本项目通过 Playwright 自动化登录 QQ 音乐获取新 key，配合 systemd timer 每 2 天自动运行，确保 meting-api 始终持有有效的 VIP cookie。
 
-## 前置条件
+## 工作原理
 
-- Python 3.10+
-- 系统能打开 Chromium 浏览器（无头模式不需要桌面环境，但遇到验证码时需要有头模式）
+1. Playwright 打开 QQ 音乐网页端（y.qq.com），自动完成账号密码登录
+2. 从浏览器 cookie 中提取 `qqmusic_key` 和 `uin`
+3. 通过 Vercel API 更新项目环境变量 `QQ_MUSIC_KEY` 和 `QQ_UIN`
+4. 触发 Vercel production 重新部署，新 key 立即生效
+5. 通过 Telegram Bot 发送结果通知（可选）
 
-## 安装
+## 本地使用
+
+### 安装
 
 ```bash
 git clone https://github.com/iliyian/qq-music-login.git
@@ -24,108 +25,115 @@ pip install playwright python-dotenv requests
 python -m playwright install chromium
 ```
 
-## 配置
-
-复制 `.env.example` 为 `.env`，填写以下四项：
+### 配置
 
 ```bash
 cp .env.example .env
+# 编辑 .env 填写配置
 ```
+
+### 运行
+
+```bash
+# 有头模式（可看到浏览器，首次运行推荐）
+python qq_music_login.py
+
+# 无头模式
+python qq_music_login.py --headless
+```
+
+## 服务器部署
+
+在 Linux 服务器上一键部署，自动每 2 天刷新一次：
+
+```bash
+# 1. 克隆项目
+git clone https://github.com/iliyian/qq-music-login.git
+cd qq-music-login
+
+# 2. 配置环境变量
+cp .env.example .env
+nano .env
+
+# 3. 一键部署
+chmod +x setup.sh
+sudo ./setup.sh
+```
+
+`setup.sh` 会自动完成：
+- 安装 Python 依赖 + Playwright Chromium
+- 安装 Xvfb（虚拟显示，以有头模式运行规避反检测）
+- 创建 systemd timer，每 2 天凌晨 4 点自动运行（带 30 分钟随机延迟）
+- 启用并启动定时器
+
+### 管理命令
+
+```bash
+# 查看定时器状态
+systemctl status qq-music-login.timer
+
+# 查看下次运行时间
+systemctl list-timers qq-music-login.timer
+
+# 手动运行一次
+sudo systemctl start qq-music-login.service
+
+# 查看运行日志
+journalctl -u qq-music-login.service -e
+```
+
+## 配置说明
+
+### 必填
 
 | 变量 | 说明 | 获取方式 |
 |------|------|----------|
 | `QQ_UIN` | QQ 号 | 你的 QQ 账号 |
 | `QQ_PASSWORD` | QQ 密码 | 你的 QQ 密码 |
-| `VERCEL_TOKEN` | Vercel API Token | [Vercel Tokens](https://vercel.com/account/tokens) 页面创建 |
+| `VERCEL_TOKEN` | Vercel API Token | [Vercel Tokens](https://vercel.com/account/tokens) 创建 |
 | `VERCEL_PROJECT_ID` | Vercel 项目 ID | 项目 Settings → General → Project ID |
 
-### 获取 Vercel Token
+### 可选（Telegram 通知）
 
-1. 打开 https://vercel.com/account/tokens
-2. 点击 **Create Token**
-3. 名称随意填，Scope 选择你的项目所在的团队或个人账户
-4. 复制生成的 token 填入 `.env`
+| 变量 | 说明 |
+|------|------|
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token |
+| `TELEGRAM_CHAT_ID` | 接收通知的 Chat ID |
 
-### 获取 Vercel Project ID
+不配置 Telegram 变量时，脚本正常运行，只是不发送通知。
 
-1. 打开你的 Vercel 项目
-2. 进入 **Settings** → **General**
-3. 页面底部可以看到 **Project ID**，复制填入 `.env`
+## Telegram 通知配置
 
-## 使用
+1. 在 Telegram 中找到 [@BotFather](https://t.me/BotFather)，发送 `/newbot` 创建机器人，获取 Bot Token
+2. 获取 Chat ID：
+   - 给你的 Bot 发送一条消息
+   - 访问 `https://api.telegram.org/bot<你的Token>/getUpdates`
+   - 在返回的 JSON 中找到 `chat.id`
+3. 将 Token 和 Chat ID 填入 `.env`
 
-### 基本用法（有头模式，可看到浏览器）
-
-```bash
-python qq_music_login.py
-```
-
-### 无头模式
-
-```bash
-python qq_music_login.py --headless
-```
-
-> 注意：无头模式下如果触发滑块验证码将无法手动处理，建议首次运行使用有头模式。
-
-### 运行流程
-
-```
-[1/6] 打开QQ音乐首页...
-[2/6] 点击登录...
-[3/6] 等待登录框...
-  找到登录框
-[4/6] 切换到账号密码登录...
-[5/6] 输入账号密码...
-  已提交，等待响应...
-[6/6] 提取cookie...
-
-登录成功!
-  uin         = 123456789
-  qqmusic_key = Q_H_L_xxxxxxxxxxxxxxxxxxxxxxxx...
-  cookie已保存到: cookies.json
-
-[Vercel] 更新环境变量...
-  更新 QQ_UID 成功
-  更新 QQ_MUSIC_KEY 成功
-[Vercel] 触发重新部署...
-  已触发重新部署: your-project-xxxxxxxx.vercel.app
-
-全部完成!
-```
+通知效果：
+- 成功时：包含 uin、key 前 20 位、Vercel 部署状态
+- 失败时：包含具体错误原因
 
 ## 验证码处理
 
-QQ 登录有时会弹出滑块验证码，脚本会自动检测并提示：
+QQ 登录有时会弹出滑块验证码：
 
-- **有头模式**：在弹出的浏览器窗口中手动完成验证即可，脚本会等待验证完成后继续
-- **无头模式**：无法手动操作，如果频繁触发验证码，建议切换到有头模式
+- **有头模式**：在弹出的浏览器窗口中手动完成验证，脚本会等待最多 2 分钟
+- **无头模式**：无法手动操作，频繁触发时建议切换有头模式
+- **服务器部署**：使用 Xvfb 虚拟显示以有头模式运行，但验证码仍需关注。同一 IP 稳定运行后触发频率会降低
 - 同一 IP 首次登录或频繁登录更容易触发验证码
 
-## 写入 Vercel 的环境变量
+## 常见问题
 
-| Vercel 环境变量 | 值 | 来源 |
-|---|---|---|
-| `QQ_UID` | QQ 号 | 登录后 cookie 中的 `uin` |
-| `QQ_MUSIC_KEY` | 音乐 key | 登录后 cookie 中的 `qqmusic_key` |
+**Q: key 多久失效？**
+A: 约 3 天。systemd timer 设置为每 2 天运行一次，确保在失效前刷新。
 
-这两个变量会同时设置到 production、preview、development 三个环境，并在更新后自动触发 production 重新部署。
+**Q: 服务器上触发验证码怎么办？**
+A: 首次部署建议先手动运行 `sudo systemctl start qq-music-login.service` 并通过日志观察。同一 IP 稳定登录后验证码频率会降低。如果持续触发，考虑先在本地有头模式完成一次登录。
 
-## 文件说明
+**Q: 怎么确认定时任务正常工作？**
+A: 配置 Telegram 通知后，每次运行都会收到成功/失败消息。也可通过 `journalctl -u qq-music-login.service -e` 查看日志。
 
-```
-├── .env.example        # 环境变量模板
-├── .gitignore          # Git 忽略规则
-├── qq_music_login.py   # 主程序
-└── README.md
-```
-
-运行后会额外生成：
-
-- `cookies.json` — 完整的浏览器 cookie 备份（已被 gitignore）
-
-## 注意事项
-
-- `qqmusic_key` 有有效期，过期后需要重新运行脚本
-- `.env` 包含敏感信息，已被 `.gitignore` 排除，不要手动提交
-- `cookies.json` 包含完整登录态，同样不要提交
+**Q: Vercel Token 和 Project ID 怎么获取？**
+A: Token 在 [Vercel Tokens](https://vercel.com/account/tokens) 页面创建。Project ID 在项目 Settings → General 页面底部。
