@@ -95,7 +95,17 @@ async def _do_login(page, context, qq: str, password: str) -> dict | None:
         return None
     await u_field.click()
     await _human_delay(page, 300, 600)
-    await u_field.type(qq, delay=random.randint(80, 160))
+    await u_field.fill("")
+    await u_field.fill(qq)
+    await _human_delay(page, 500, 800)
+    # 验证账号是否完整输入
+    actual = await u_field.input_value()
+    if actual != qq:
+        print(f"  警告：账号输入不完整，期望长度 {len(qq)}，实际 '{actual}'，重试...")
+        await u_field.triple_click()
+        await _human_delay(page, 200, 400)
+        await u_field.fill(qq)
+        await _human_delay(page, 300, 500)
     await _human_delay(page, 800, 1500)
 
     # 密码框: 优先 #p，回退到 input[type="password"]
@@ -109,7 +119,8 @@ async def _do_login(page, context, qq: str, password: str) -> dict | None:
         return None
     await p_field.click()
     await _human_delay(page, 300, 600)
-    await p_field.type(password, delay=random.randint(80, 160))
+    await p_field.fill("")
+    await p_field.fill(password)
     await _human_delay(page, 1000, 2000)
 
     # 登录按钮: 优先 #login_button，回退到文本匹配
