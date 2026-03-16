@@ -63,20 +63,25 @@ async def _do_login(page, context, qq: str, password: str) -> dict | None:
     print("  找到登录框")
 
     print("[4/6] 切换到账号密码登录...")
-    # 新版登录页: 底部 "密码登录" 链接
+    # 等待iframe内容加载完成（最多15秒）
     pwd_link = login_frame.locator("a:has-text('密码登录')")
-    # 旧版登录页: #switcher_plogin 按钮
     old_switcher = login_frame.locator("#switcher_plogin")
-    if await pwd_link.count() > 0 and await pwd_link.is_visible():
-        await pwd_link.click()
-        await _human_delay(page, 1500, 3000)
-    elif await old_switcher.count() > 0 and await old_switcher.is_visible():
-        await old_switcher.click()
-        await _human_delay(page, 1500, 3000)
-    else:
+    found = False
+    for _ in range(30):
+        if await pwd_link.count() > 0 and await pwd_link.is_visible():
+            await pwd_link.click()
+            found = True
+            break
+        if await old_switcher.count() > 0 and await old_switcher.is_visible():
+            await old_switcher.click()
+            found = True
+            break
+        await page.wait_for_timeout(500)
+    if not found:
         await page.screenshot(path="/tmp/qq_login_debug.png")
         print("  错误：未找到密码登录切换入口，截图已保存到 /tmp/qq_login_debug.png")
         return None
+    await _human_delay(page, 1500, 3000)
 
     print("[5/6] 输入账号密码...")
     # 账号框: 优先 #u，回退到 input[type="text"]
