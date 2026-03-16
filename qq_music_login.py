@@ -521,6 +521,7 @@ async def main():
     notify(
         f"✅ <b>QQ音乐 Key 刷新成功</b>\n\n"
         f"uin: {uin}\n"
+        f"qqmusic_key: <code>{qqmusic_key}</code>\n\n"
         f"Vercel 环境变量已更新并触发重新部署"
     )
 
