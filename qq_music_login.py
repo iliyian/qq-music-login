@@ -25,9 +25,13 @@ TELEGRAM_API = "https://api.telegram.org"
 # ─── QQ音乐登录 ───────────────────────────────────────────
 
 
-async def login(qq: str, password: str, headless: bool = False) -> dict | None:
+async def login(qq: str, password: str, headless: bool = False, proxy: str | None = None) -> dict | None:
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=headless)
+        launch_opts = {"headless": headless}
+        if proxy:
+            launch_opts["proxy"] = {"server": proxy}
+            print(f"[Browser] 使用代理: {proxy}")
+        browser = await p.chromium.launch(**launch_opts)
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent=(
@@ -339,13 +343,18 @@ def update_vercel(token: str, project_id: str, uin: str, qqmusic_key: str):
 # ─── Telegram 通知 ────────────────────────────────────────
 
 
-def send_telegram(token: str, chat_id: str, message: str):
+def send_telegram(token: str, chat_id: str, message: str, proxy: str | None = None):
     """发送 Telegram 消息通知"""
+    kwargs = {
+        "json": {"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
+        "timeout": 10,
+    }
+    if proxy:
+        kwargs["proxies"] = {"http": proxy, "https": proxy}
     try:
         resp = http_requests.post(
             f"{TELEGRAM_API}/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
-            timeout=10,
+            **kwargs,
         )
         resp.raise_for_status()
         print(f"[Telegram] 通知发送成功")
@@ -365,6 +374,8 @@ async def main():
     vercel_project_id = os.getenv("VERCEL_PROJECT_ID")
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
     tg_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    tg_proxy = os.getenv("TELEGRAM_PROXY")
+    qq_music_proxy = os.getenv("QQ_MUSIC_PROXY")
 
     if not qq or not password:
         print("错误：请在 .env 中配置 QQ_UIN 和 QQ_PASSWORD")
@@ -377,10 +388,10 @@ async def main():
 
     def notify(message: str):
         if tg_token and tg_chat_id:
-            send_telegram(tg_token, tg_chat_id, message)
+            send_telegram(tg_token, tg_chat_id, message, proxy=tg_proxy)
 
     # 1. 登录QQ音乐
-    result = await login(qq, password, headless=headless)
+    result = await login(qq, password, headless=headless, proxy=qq_music_proxy)
     if not result:
         notify("❌ <b>QQ音乐 Key 刷新失败</b>\n\n登录未成功，未获取到 qqmusic_key")
         sys.exit(1)
