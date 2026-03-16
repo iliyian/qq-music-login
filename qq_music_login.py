@@ -8,6 +8,7 @@ QQ音乐登录 - 自动获取 qqmusic_key 并更新到 Vercel 项目环境变量
 """
 
 import asyncio
+import json
 import os
 import random
 import sys
@@ -23,6 +24,90 @@ TELEGRAM_API = "https://api.telegram.org"
 
 
 # ─── QQ音乐登录 ───────────────────────────────────────────
+
+
+def _parse_cookie_string(cookie_str: str) -> list[dict]:
+    """将 'key1=val1; key2=val2' 格式的 cookie 字符串解析为 Playwright cookie 列表"""
+    cookies = []
+    for pair in cookie_str.split(";"):
+        pair = pair.strip()
+        if "=" not in pair:
+            continue
+        name, value = pair.split("=", 1)
+        cookies.append({
+            "name": name.strip(),
+            "value": value.strip(),
+            "domain": ".y.qq.com",
+            "path": "/",
+        })
+    return cookies
+
+
+async def login_with_cookie(init_cookie: str, headless: bool = False, proxy: str | None = None) -> dict | None:
+    """使用已有 cookie 登录，跳过账号密码输入和安全验证"""
+    print("[Cookie模式] 使用 INIT_COOKIE 登录...")
+    async with async_playwright() as p:
+        launch_opts = {"headless": headless}
+        if proxy:
+            launch_opts["proxy"] = {"server": proxy}
+            print(f"[Browser] 使用代理: {proxy}")
+        browser = await p.chromium.launch(**launch_opts)
+        context = await browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+        )
+        try:
+            # 注入 cookie
+            pw_cookies = _parse_cookie_string(init_cookie)
+            print(f"[Cookie模式] 注入 {len(pw_cookies)} 个 cookie: {[c['name'] for c in pw_cookies]}")
+            await context.add_cookies(pw_cookies)
+
+            page = await context.new_page()
+            print("[Cookie模式] 打开QQ音乐首页...")
+            await page.goto(QQMUSIC_URL, wait_until="domcontentloaded")
+            await page.wait_for_timeout(5000)
+
+            # 检查是否已登录（页面上不再显示"登录"按钮，或 cookie 已刷新）
+            cookies = await context.cookies()
+            target_keys = {
+                "qqmusic_key", "qm_keyst", "uin",
+                "psrf_qqaccess_token", "psrf_qqopenid",
+                "psrf_qqunionid", "psrf_qqrefresh_token",
+                "psrf_access_token_expiresAt", "tmeLoginType",
+                "euin", "psrf_musickey_createtime",
+            }
+            result = {c["name"]: c["value"] for c in cookies if c["name"] in target_keys}
+
+            if "qqmusic_key" in result:
+                print("[Cookie模式] 登录成功!")
+                print(f"  uin = {result.get('uin', '?')}")
+                return result
+
+            # cookie 可能过期，尝试刷新：点击一个需要登录的页面
+            print("[Cookie模式] 首页未获取到 qqmusic_key，尝试访问个人页面触发刷新...")
+            await page.goto("https://y.qq.com/n/ryqq/profile", wait_until="domcontentloaded")
+            await page.wait_for_timeout(5000)
+
+            cookies = await context.cookies()
+            result = {c["name"]: c["value"] for c in cookies if c["name"] in target_keys}
+
+            if "qqmusic_key" in result:
+                print("[Cookie模式] 刷新后登录成功!")
+                print(f"  uin = {result.get('uin', '?')}")
+                return result
+
+            await page.screenshot(path="/tmp/qq_login_debug.png")
+            print("[Cookie模式] 失败：cookie 可能已过期，截图已保存到 /tmp/qq_login_debug.png")
+            print(f"  当前URL: {page.url}")
+            cookie_names = [c["name"] for c in cookies]
+            print(f"  所有cookie ({len(cookie_names)}): {cookie_names}")
+            return None
+        finally:
+            await browser.close()
 
 
 async def login(qq: str, password: str, headless: bool = False, proxy: str | None = None) -> dict | None:
@@ -390,10 +475,8 @@ async def main():
     tg_proxy = os.getenv("TELEGRAM_PROXY")
     qq_music_proxy = os.getenv("QQ_MUSIC_PROXY")
     vercel_proxy = os.getenv("VERCEL_PROXY")
+    init_cookie = os.getenv("INIT_COOKIE")
 
-    if not qq or not password:
-        print("错误：请在 .env 中配置 QQ_UIN 和 QQ_PASSWORD")
-        sys.exit(1)
     if not vercel_token or not vercel_project_id:
         print("错误：请在 .env 中配置 VERCEL_TOKEN 和 VERCEL_PROJECT_ID")
         sys.exit(1)
@@ -405,7 +488,18 @@ async def main():
             send_telegram(tg_token, tg_chat_id, message, proxy=tg_proxy)
 
     # 1. 登录QQ音乐
-    result = await login(qq, password, headless=headless, proxy=qq_music_proxy)
+    result = None
+    if init_cookie:
+        result = await login_with_cookie(init_cookie, headless=headless, proxy=qq_music_proxy)
+        if not result:
+            print("[Cookie模式] 失败，回退到账号密码登录...")
+
+    if not result:
+        if not qq or not password:
+            print("错误：请在 .env 中配置 QQ_UIN 和 QQ_PASSWORD（或配置 INIT_COOKIE）")
+            sys.exit(1)
+        result = await login(qq, password, headless=headless, proxy=qq_music_proxy)
+
     if not result:
         notify("❌ <b>QQ音乐 Key 刷新失败</b>\n\n登录未成功，未获取到 qqmusic_key")
         sys.exit(1)
