@@ -251,20 +251,26 @@ def _vercel_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
-def _get_env_vars(token: str, project_id: str) -> list[dict]:
+def _vercel_proxies(proxy: str | None) -> dict | None:
+    return {"http": proxy, "https": proxy} if proxy else None
+
+
+def _get_env_vars(token: str, project_id: str, proxy: str | None = None) -> list[dict]:
     """获取项目当前所有环境变量"""
     resp = http_requests.get(
         f"{VERCEL_API}/v9/projects/{project_id}/env",
         headers=_vercel_headers(token),
+        proxies=_vercel_proxies(proxy),
     )
     resp.raise_for_status()
     return resp.json().get("envs", [])
 
 
-def _upsert_env_var(token: str, project_id: str, key: str, value: str):
+def _upsert_env_var(token: str, project_id: str, key: str, value: str, proxy: str | None = None):
     """创建或更新单个环境变量（覆盖所有target: production/preview/development）"""
     headers = _vercel_headers(token)
-    envs = _get_env_vars(token, project_id)
+    proxies = _vercel_proxies(proxy)
+    envs = _get_env_vars(token, project_id, proxy=proxy)
 
     existing = [e for e in envs if e["key"] == key]
 
@@ -278,6 +284,7 @@ def _upsert_env_var(token: str, project_id: str, key: str, value: str):
                 "target": ["production", "preview", "development"],
                 "type": "encrypted",
             },
+            proxies=proxies,
         )
     else:
         resp = http_requests.post(
@@ -289,6 +296,7 @@ def _upsert_env_var(token: str, project_id: str, key: str, value: str):
                 "target": ["production", "preview", "development"],
                 "type": "encrypted",
             },
+            proxies=proxies,
         )
 
     resp.raise_for_status()
@@ -296,15 +304,17 @@ def _upsert_env_var(token: str, project_id: str, key: str, value: str):
     print(f"  {action} {key} 成功")
 
 
-def _trigger_redeploy(token: str, project_id: str):
+def _trigger_redeploy(token: str, project_id: str, proxy: str | None = None):
     """获取最近一次production部署并触发重新部署"""
     headers = _vercel_headers(token)
+    proxies = _vercel_proxies(proxy)
 
     # 获取最近的 production deployment
     resp = http_requests.get(
         f"{VERCEL_API}/v6/deployments",
         headers=headers,
         params={"projectId": project_id, "target": "production", "limit": 1},
+        proxies=proxies,
     )
     resp.raise_for_status()
     deployments = resp.json().get("deployments", [])
@@ -324,20 +334,23 @@ def _trigger_redeploy(token: str, project_id: str):
             "deploymentId": deploy_id,
             "target": "production",
         },
+        proxies=proxies,
     )
     resp.raise_for_status()
     new_url = resp.json().get("url", "")
     print(f"  已触发重新部署: {new_url}")
 
 
-def update_vercel(token: str, project_id: str, uin: str, qqmusic_key: str):
+def update_vercel(token: str, project_id: str, uin: str, qqmusic_key: str, proxy: str | None = None):
     """更新Vercel环境变量并触发重新部署"""
     print("\n[Vercel] 更新环境变量...")
-    _upsert_env_var(token, project_id, "QQ_UIN", uin)
-    _upsert_env_var(token, project_id, "QQ_MUSIC_KEY", qqmusic_key)
+    if proxy:
+        print(f"[Vercel] 使用代理: {proxy}")
+    _upsert_env_var(token, project_id, "QQ_UIN", uin, proxy=proxy)
+    _upsert_env_var(token, project_id, "QQ_MUSIC_KEY", qqmusic_key, proxy=proxy)
 
     print("[Vercel] 触发重新部署...")
-    _trigger_redeploy(token, project_id)
+    _trigger_redeploy(token, project_id, proxy=proxy)
 
 
 # ─── Telegram 通知 ────────────────────────────────────────
@@ -376,6 +389,7 @@ async def main():
     tg_chat_id = os.getenv("TELEGRAM_CHAT_ID")
     tg_proxy = os.getenv("TELEGRAM_PROXY")
     qq_music_proxy = os.getenv("QQ_MUSIC_PROXY")
+    vercel_proxy = os.getenv("VERCEL_PROXY")
 
     if not qq or not password:
         print("错误：请在 .env 中配置 QQ_UIN 和 QQ_PASSWORD")
@@ -400,7 +414,7 @@ async def main():
     uin = result.get("uin", qq)
     qqmusic_key = result["qqmusic_key"]
     try:
-        update_vercel(vercel_token, vercel_project_id, uin, qqmusic_key)
+        update_vercel(vercel_token, vercel_project_id, uin, qqmusic_key, proxy=vercel_proxy)
     except Exception as e:
         notify(
             f"❌ <b>QQ音乐 Key 刷新失败</b>\n\n"
