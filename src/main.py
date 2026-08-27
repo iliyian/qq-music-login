@@ -21,18 +21,12 @@ import sys
 from playwright.async_api import async_playwright
 
 from .browser_loop import (
-    ACTION_ABORT,
-    ACTION_CLICK,
-    ACTION_TYPE,
-    ACTION_WAIT,
-    Action,
     LoopAborted,
     LoopError,
     LoopState,
     dump_debug,
     run_login_loop,
 )
-from .captcha_solver import detect_captcha, solve_slider
 from .config import PROJECT_ROOT, QQMUSIC_URL, RunOutcome, Settings, load_settings
 from .session_persistence import (
     CookieStore,
@@ -43,6 +37,7 @@ from .session_persistence import (
     try_silent_refresh,
 )
 from .sms_waiter import SMSSource, TelegramBotSource, WebhookFileSource, wait_for_sms_async
+from .ai_decision import AIVisionDecision
 from .telegram_notify import send_telegram
 from .vercel_api import update_vercel
 
@@ -70,82 +65,6 @@ def parse_cookie_string(cookie_str: str) -> list[dict]:
     return cookies
 
 
-# ─── 登录决策器（骨架：脚本化凭据提交 + 验证码分支） ────────────
-
-
-class CredentialFlowDecision:
-    """账号密码登录的决策函数骨架。
-
-    前几步按固定脚本提交凭据（复刻旧版 _do_login 的选择器），
-    之后进入「观察模式」：每步截图后检查 tcaptcha iframe：
-      - slider     -> solve_slider 自动尝试 settings.slider_max_attempts 轮
-      - sms/其他   -> 记录类型并等待（短信验证码由 sms_waiter 在外层编排处理）
-    长时间无进展则 abort。
-    """
-
-    def __init__(self, qq: str, password: str, slider_max_attempts: int = 3,
-                 give_up_after: int = 8):
-        self.qq = qq
-        self.password = password
-        self.slider_max_attempts = slider_max_attempts
-        self.give_up_after = give_up_after
-        self.captcha_seen: dict | None = None
-        self.slider_failed = False
-        self._script_done = False
-        self._script = [
-            [Action(type=ACTION_CLICK, selector="a:has-text('登录')", timeout_ms=8000)],
-            [Action(type=ACTION_WAIT, text="2000")],
-            # 切换到密码登录（新 #switcher_plogin / 旧 '密码登录' 文本链接，二选一由 UI 决定）
-            [Action(type=ACTION_CLICK, selector="#switcher_plogin", frame="ptlogin2", timeout_ms=5000)],
-            [Action(type=ACTION_TYPE, selector="#u", text=qq, frame="ptlogin2", timeout_ms=5000)],
-            [Action(type=ACTION_TYPE, selector="#p", text=password, frame="ptlogin2", timeout_ms=5000)],
-            [Action(type=ACTION_CLICK, selector="#login_button", frame="ptlogin2", timeout_ms=8000)],
-        ]
-
-    def as_decide(self, page, settings_state: "LoopState | None" = None):
-        """返回与 DecisionFn 兼容的 async callable（闭包携带 page）。"""
-        step = 0
-
-        async def decide(state: LoopState, screenshot: bytes) -> list[Action]:
-            nonlocal step
-            state.notes.setdefault("flow", "credential")
-
-            # 脚本阶段：逐步提交凭据
-            if not self._script_done:
-                acts = self._script[step] if step < len(self._script) else [Action(type=ACTION_WAIT, text="1500")]
-                step += 1
-                if step >= len(self._script):
-                    self._script_done = True
-                return acts
-
-            # 观察阶段：检测验证码
-            det = detect_captcha(screenshot_bytes=screenshot, frame_urls=state.frame_urls)
-            if det and not self.slider_failed:
-                self.captcha_seen = det
-                state.notes["captcha"] = det
-                if det["kind"] == "slider":
-                    ok = await solve_slider(page, max_attempts=self.slider_max_attempts)
-                    if ok:
-                        state.notes["captcha_solved"] = True
-                        return [Action(type=ACTION_WAIT, text="2000")]
-                    self.slider_failed = True
-                    state.notes["slider_failed"] = True
-                    return [Action(type=ACTION_ABORT, text="滑块自动尝试全部失败，转短信/人工分支")]
-                state.notes["captcha_kind"] = det["kind"]
-
-            # 观察模式：等页面跳转/cookie 刷新，超过预算 abort 交回编排层
-            state.notes["observe_steps"] = state.notes.get("observe_steps", 0) + 1
-            if state.notes["observe_steps"] > self.give_up_after:
-                return [Action(type=ACTION_ABORT, text="观察模式超预算，登录未完成")]
-            return [Action(type=ACTION_WAIT, text="2000")]
-
-        return decide
-
-    # 兼容 DecisionFn 直接调用（decide(state, screenshot)）
-    async def __call__(self, state: LoopState, screenshot: bytes) -> list[Action]:
-        raise NotImplementedError("使用 as_decide(page) 生成闭包后再传入 run_login_loop")
-
-
 # ─── 浏览器上下文构造 ───────────────────────────────────────
 
 
@@ -154,6 +73,7 @@ async def build_context(p, settings, storage_state: str | None = None):
     if settings.qq_music_proxy:
         launch_opts["proxy"] = {"server": settings.qq_music_proxy}
         print(f"[Browser] 使用代理: {settings.qq_music_proxy}")
+    launch_opts["args"] = ["--no-sandbox"]  # root 环境必需
     browser = await p.chromium.launch(**launch_opts)
     kwargs: dict = {
         "viewport": {"width": 1280, "height": 800},
@@ -181,8 +101,10 @@ async def success_when_logged(context):
 async def run_browser_login(context, settings, notify) -> tuple[dict | None, str]:
     """执行完整浏览器登录，返回 (cookie_payload, 失效原因)。"""
     page = await context.new_page()
-    decider = CredentialFlowDecision(
-        settings.qq_uin, settings.qq_password, slider_max_attempts=settings.slider_max_attempts
+    decider = AIVisionDecision(
+        slider_max_attempts=settings.slider_max_attempts,
+        qq_uin=settings.qq_uin,
+        qq_password=settings.qq_password,
     )
     outcome: dict = {"success": False, "reason": ""}
     try:
